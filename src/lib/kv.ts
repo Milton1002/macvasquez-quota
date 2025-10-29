@@ -1,43 +1,58 @@
 // src/lib/kv.ts
-const URL = process.env.UPSTASH_REDIS_REST_URL!;
-const TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN!;
+// Wrapper que funciona con @vercel/kv (KV_*) o @upstash/redis (UPSTASH_REDIS_*)
+// y expone una interfaz kv.get/kv.set/kv.incr/kv.expire homogénea para Edge.
 
-if (!URL || !TOKEN) {
-  console.warn("❌ Falta configurar UPSTASH_REDIS_REST_URL o UPSTASH_REDIS_REST_TOKEN");
-}
+type KVLike = {
+  get<T = unknown>(key: string): Promise<T | null>;
+  set(key: string, value: unknown, opts?: { ex?: number }): Promise<void>;
+  incr(key: string): Promise<number>;
+  expire(key: string, seconds: number): Promise<void>;
+};
 
-async function upstash<T = any>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${URL}${path}`, {
-    ...init,
-    headers: {
-      authorization: `Bearer ${TOKEN}`,
-      "content-type": "application/json",
-      ...(init?.headers || {}),
+let kv: KVLike;
+
+// Prioridad 1: Vercel KV (@vercel/kv)
+if (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN) {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const vercel = require('@vercel/kv');
+  kv = vercel.kv as KVLike;
+} else {
+  // Prioridad 2: Upstash Redis (@upstash/redis)
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { Redis } = require('@upstash/redis');
+
+  const url =
+    process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL || '';
+  const token =
+    process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN || '';
+
+  if (!url || !token) {
+    throw new Error(
+      'Faltan variables de entorno para KV/Upstash. Define KV_REST_API_URL/KV_REST_API_TOKEN o UPSTASH_REDIS_REST_URL/UPSTASH_REDIS_REST_TOKEN.'
+    );
+  }
+
+  const redis = new Redis({ url, token });
+
+  kv = {
+    async get<T = unknown>(key: string) {
+      const v = await redis.get<T | null>(key);
+      return (v ?? null) as T | null;
     },
-    cache: "no-store",
-  });
-  if (!res.ok) throw new Error(`Upstash error ${res.status}`);
-  return res.json();
+    async set(key: string, value: unknown, opts?: { ex?: number }) {
+      if (opts?.ex) {
+        await redis.set(key, value as any, { ex: opts.ex });
+      } else {
+        await redis.set(key, value as any);
+      }
+    },
+    async incr(key: string) {
+      return await redis.incr(key);
+    },
+    async expire(key: string, seconds: number) {
+      await redis.expire(key, seconds);
+    },
+  };
 }
 
-export async function kvGet(key: string): Promise<string | null> {
-  const r = await upstash<{ result: string | null }>(`/get/${encodeURIComponent(key)}`);
-  return r.result;
-}
-
-export async function kvSet(key: string, value: string, ttlSec?: number): Promise<true> {
-  if (ttlSec && ttlSec > 0) {
-    await upstash(`/set/${encodeURIComponent(key)}/${encodeURIComponent(value)}?ex=${ttlSec}`, { method: "POST" });
-  } else {
-    await upstash(`/set/${encodeURIComponent(key)}/${encodeURIComponent(value)}`, { method: "POST" });
-  }
-  return true;
-}
-
-export async function kvIncrWithTtl(key: string, ttlSec: number): Promise<number> {
-  const r = await upstash<{ result: number }>(`/incr/${encodeURIComponent(key)}`, { method: "POST" });
-  if (r.result === 1 && ttlSec > 0) {
-    await upstash(`/expire/${encodeURIComponent(key)}/${ttlSec}`, { method: "POST" });
-  }
-  return r.result;
-}
+export default kv;

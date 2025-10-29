@@ -8,7 +8,7 @@ export default async function handler(req: Request) {
 
   const { endpoint } = await safeJson(req);
   if (!endpoint) return json({ error: 'endpoint requerido' }, 400);
-
+  
   const { unlockKey } = keys(dayKey, endpoint, id);
   await kvSet(unlockKey, '1', 27 * 3600); // válido ~1 día
 

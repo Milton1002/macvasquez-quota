@@ -1,43 +1,33 @@
-export const config = { runtime: 'edge' };
+// api/quota/unlock.ts
+import type { VercelRequest, VercelResponse } from '@vercel/node';
+import redis from '../../src/lib/kv';
+import { getClientIp, getDeviceId, todayISO } from '../../src/lib/id';
 
-import kv from '@/src/lib/kv';
-import { getIdentity } from '@/src/lib/id';
+// Minutos de ventana tras pago aprobado (1 consulta gratis)
+const PAID_WINDOW_SECONDS = 5 * 60; // 5 min
 
-type Body = { endpoint?: 'vehicular' | 'nombres' };
-
-function k(day: string, endpoint: string, id: string) {
-  return {
-    unlock: `q:${endpoint}:${day}:${id}:unlock`,
-  };
-}
-
-export default async function handler(req: Request) {
-  if (req.method === 'OPTIONS') return new Response(JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json' } });
-  if (req.method !== 'POST') return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers: { 'content-type': 'application/json' } });
-
-  const { id, dayKey } = getIdentity(req);
-
-  let body: Body;
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
-    body = (await req.json()) as Body;
-  } catch {
-    return json({ error: 'JSON inválido' }, 400);
+    if (req.method !== 'POST') {
+      res.status(405).json({ ok: false, error: 'Method Not Allowed' });
+      return;
+    }
+
+    const ip = getClientIp(req);
+    const device = getDeviceId(req) || ip;
+
+    const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+    const endpoint = String(body.endpoint || '').trim() || 'default';
+
+    const day = todayISO();
+    const baseKey = `q:${endpoint}:${device}:${day}`;
+    const unlockKey = `unlock:${baseKey}`;
+
+    // Coloca un “pase” de pago para la siguiente consulta
+    await redis.set(unlockKey, '1', { ex: PAID_WINDOW_SECONDS });
+
+    res.status(200).json({ ok: true, unlocked: true });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err?.message || 'Server error' });
   }
-
-  const endpoint = body.endpoint;
-  if (!endpoint) return json({ error: 'endpoint requerido' }, 400);
-
-  const { unlock } = k(dayKey, endpoint, id);
-
-  // marcamos desbloqueo válido por ~27h (tolerancia a husos horarios)
-  await kv.set(unlock, '1', { ex: 27 * 60 * 60 });
-
-  return json({ ok: true, unlocked: true });
-}
-
-function json(obj: unknown, status = 200) {
-  return new Response(JSON.stringify(obj), {
-    status,
-    headers: { 'content-type': 'application/json' },
-  });
 }

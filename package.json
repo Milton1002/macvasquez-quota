@@ -1,10 +1,12 @@
 {
   "name": "macvasquez-quota",
-  "version": "1.0.0",
   "private": true,
   "type": "module",
   "dependencies": {
-    "@vercel/kv": "1.0.1",
-    "cookie": "0.6.0"
+    "@upstash/redis": "^1.31.4",
+    "cookie": "^0.6.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
   }
 }

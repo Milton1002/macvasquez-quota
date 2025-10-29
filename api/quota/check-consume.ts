@@ -1,68 +1,63 @@
-export const config = { runtime: 'edge' };
+// api/quota/check-consume.ts
+import type { VercelRequest, VercelResponse } from '@vercel/node';
+import redis from '../../src/lib/kv';
+import { getClientIp, getDeviceId, todayISO, secondsUntilTomorrowUTC } from '../../src/lib/id';
 
-import kv from '@/src/lib/kv';
-import { getIdentity } from '@/src/lib/id';
+const DAILY_LIMIT = 3;
 
-type Body = { endpoint?: 'vehicular' | 'nombres' };
-
-function k(day: string, endpoint: string, id: string) {
-  return {
-    count: `q:${endpoint}:${day}:${id}:count`,
-    unlock: `q:${endpoint}:${day}:${id}:unlock`,
-  };
-}
-
-const LIMITS: Record<string, number> = {
-  vehicular: 3,
-  nombres: 3,
-};
-
-export default async function handler(req: Request) {
-  if (req.method === 'OPTIONS') return new Response(JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json' } });
-  if (req.method !== 'POST') return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers: { 'content-type': 'application/json' } });
-
-  const { id, ip, dayKey } = getIdentity(req);
-
-  let body: Body;
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
-    body = (await req.json()) as Body;
-  } catch {
-    return json({ error: 'JSON inválido' }, 400);
-  }
-
-  const endpoint = body.endpoint;
-  if (!endpoint || !(endpoint in LIMITS)) {
-    return json({ error: 'endpoint requerido' }, 400);
-  }
-
-  const keys = k(dayKey, endpoint, id);
-
-  // ¿Está desbloqueado por pago?
-  const unlocked = await kv.get<string>(keys.unlock);
-  if (unlocked === '1') {
-    return json({ allowed: true, reason: 'paid', remaining: 0, ip });
-  }
-
-  // Contador de uso por día
-  const limit = LIMITS[endpoint];
-  const current = (await kv.get<number>(keys.count)) ?? 0;
-
-  if (current < limit) {
-    const newVal = await kv.incr(keys.count);
-    if (newVal === 1) {
-      // primer uso del día → expira en ~24h
-      await kv.expire(keys.count, 24 * 60 * 60);
+    if (req.method !== 'POST') {
+      res.status(405).json({ ok: false, error: 'Method Not Allowed' });
+      return;
     }
-    const remaining = Math.max(0, limit - newVal);
-    return json({ allowed: true, reason: 'quota', remaining, ip });
+
+    const ip = getClientIp(req);
+    const device = getDeviceId(req) || ip;
+
+    // Body: { endpoint: "vehicular" | "nombres" | ... }
+    const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+    const endpoint = String(body.endpoint || '').trim() || 'default';
+
+    const day = todayISO();
+    const baseKey = `q:${endpoint}:${device}:${day}`;
+    const unlockKey = `unlock:${baseKey}`;
+
+    // ¿Pago aprobado (desbloqueo temporal)? => permite 1 consulta sin consumir cuota
+    const unlocked = await redis.get<number | string>(unlockKey);
+    if (unlocked) {
+      await redis.del(unlockKey); // se consume el "pase" de pago
+      const current = Number(await redis.get<number>(baseKey)) || 0;
+      res.status(200).json({
+        allowed: true,
+        reason: 'paid',
+        remaining: Math.max(0, DAILY_LIMIT - current),
+        ip
+      });
+      return;
+    }
+
+    // Lectura de uso actual
+    const current = Number(await redis.get<number>(baseKey)) || 0;
+
+    if (current >= DAILY_LIMIT) {
+      res.status(200).json({ allowed: false, reason: 'limit', remaining: 0, ip });
+      return;
+    }
+
+    // Incrementar y asegurar expiración a medianoche UTC
+    const next = await redis.incr(baseKey);
+    if (next === 1) {
+      await redis.expire(baseKey, secondsUntilTomorrowUTC());
+    }
+
+    res.status(200).json({
+      allowed: true,
+      reason: 'quota',
+      remaining: Math.max(0, DAILY_LIMIT - next),
+      ip
+    });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err?.message || 'Server error' });
   }
-
-  return json({ allowed: false, reason: 'limit', remaining: 0, ip });
-}
-
-function json(obj: unknown, status = 200) {
-  return new Response(JSON.stringify(obj), {
-    status,
-    headers: { 'content-type': 'application/json' },
-  });
 }

@@ -1,12 +1,2 @@
-// src/lib/kv.ts
-import { Redis } from '@upstash/redis';
-
-const url = process.env.UPSTASH_REDIS_REST_URL;
-const token = process.env.UPSTASH_REDIS_REST_TOKEN;
-
-if (!url || !token) {
-  throw new Error('Faltan variables: UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN');
-}
-
-const redis = new Redis({ url, token });
-export default redis;
+import { kv } from '@vercel/kv';
+export default kv;

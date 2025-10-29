@@ -1,28 +1,43 @@
-export const config = { runtime: "edge" };
+export const config = { runtime: 'edge' };
 
-import { kvSet } from "@/lib/kv";
-import { getIdentity, dayKey } from "@/lib/id";
+import kv from '@/src/lib/kv';
+import { getIdentity } from '@/src/lib/id';
 
-const TTL = 27 * 3600;
+type Body = { endpoint?: 'vehicular' | 'nombres' };
 
-const json = (o: any, s = 200) =>
-  new Response(JSON.stringify(o), {
-    status: s,
-    headers: { "content-type": "application/json", "access-control-allow-origin": "*" },
-  });
+function k(day: string, endpoint: string, id: string) {
+  return {
+    unlock: `q:${endpoint}:${day}:${id}:unlock`,
+  };
+}
 
 export default async function handler(req: Request) {
-  if (req.method === "OPTIONS") return json({ ok: true });
-  if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  if (req.method === 'OPTIONS') return new Response(JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json' } });
+  if (req.method !== 'POST') return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers: { 'content-type': 'application/json' } });
 
-  const { id } = getIdentity(req);
-  const day = dayKey();
+  const { id, dayKey } = getIdentity(req);
 
-  let body: any = {};
-  try { body = await req.json(); } catch {}
-  const endpoint = String(body?.endpoint || "");
-  if (!endpoint) return json({ error: "endpoint requerido" }, 400);
+  let body: Body;
+  try {
+    body = (await req.json()) as Body;
+  } catch {
+    return json({ error: 'JSON inválido' }, 400);
+  }
 
-  await kvSet(`u:${day}:${endpoint}:${id}`, "1", TTL);
+  const endpoint = body.endpoint;
+  if (!endpoint) return json({ error: 'endpoint requerido' }, 400);
+
+  const { unlock } = k(dayKey, endpoint, id);
+
+  // marcamos desbloqueo válido por ~27h (tolerancia a husos horarios)
+  await kv.set(unlock, '1', { ex: 27 * 60 * 60 });
+
   return json({ ok: true, unlocked: true });
+}
+
+function json(obj: unknown, status = 200) {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
 }

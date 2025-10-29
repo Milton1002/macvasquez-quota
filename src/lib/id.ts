@@ -1,31 +1,38 @@
-// src/lib/id.ts
-import type { VercelRequest } from '@vercel/node';
+import { parse } from 'cookie';
 
-export function getClientIp(req: VercelRequest): string {
-  const xf = (req.headers['x-forwarded-for'] || '') as string;
-  const first = xf.split(',')[0]?.trim();
-  return first || (req.socket?.remoteAddress || '0.0.0.0');
-}
+// Devuelve deviceId + fecha YYYY-MM-DD + objetos útiles
+export function getContext(req: Request) {
+  const url = new URL(req.url);
+  const headers = Object.fromEntries(req.headers.entries());
 
-export function getDeviceId(req: VercelRequest): string {
-  return (req.headers['x-device-id'] as string)?.trim() || '';
-}
+  let deviceId = headers['x-device-id'] || url.searchParams.get('deviceId') || '';
+  const cookieHeader = req.headers.get('cookie') || '';
+  const cookies = parse(cookieHeader);
+  if (!deviceId && cookies.deviceId) deviceId = cookies.deviceId;
+  if (!deviceId) deviceId = crypto.randomUUID();
 
-export function todayISO(): string {
   const now = new Date();
-  const y = now.getUTCFullYear();
-  const m = String(now.getUTCMonth() + 1).padStart(2, '0');
-  const d = String(now.getUTCDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  const dayKey = `${y}-${m}-${d}`;
+
+  return { deviceId, dayKey, headers, url };
 }
 
-export function secondsUntilTomorrowUTC(): number {
-  const now = new Date();
-  const tomorrow = new Date(Date.UTC(
-    now.getUTCFullYear(),
-    now.getUTCMonth(),
-    now.getUTCDate() + 1,
-    0, 0, 0, 0
-  ));
-  return Math.max(1, Math.floor((+tomorrow - +now) / 1000));
+export function keys(dayKey: string, endpoint: string, deviceId: string) {
+  const base = `${dayKey}:${endpoint}:${deviceId}`;
+  return {
+    countKey: `quota:${base}`,
+    unlockKey: `unlock:${base}`
+  };
 }
+
+export function json(data: any, init: number | ResponseInit = 200) {
+  const headers = {
+    'content-type': 'application/json; charset=utf-8',
+    'access-control-allow-origin': '*',
+    'access-control-allow-headers': '*',
+    'access-control-allow-methods': 'GET,POST,OPTIONS'
+  };
+  const status = typeof init === 'number' ? init :
